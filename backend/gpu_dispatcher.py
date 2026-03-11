@@ -1,79 +1,69 @@
-
-from __future__ import annotations
-
-import logging
 import time
-from typing import Any, Dict, Tuple
-
-from .utils import HF_MODELS, get_model, get_tokenizer
-
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+import random
+import logging
+import subprocess
 
 logger = logging.getLogger(__name__)
 
+HF_MODELS = [
+    'Qwen/Qwen2.5-72B-Instruct',
+    'meta-llama/Meta-Llama-3.1-70B-Instruct',
+    'mistralai/Mistral-Large-Instruct-2407',
+    'THUDM/glm-4-9b-chat',
+    'DeepSeek-AI/DeepSeek-V2-Chat'
+]
 
-def gpu_inference(
-    prompt: str,
-    cloud: str,
-    model_name: str = "Qwen/Qwen2.5-72B-Instruct",
-    quant_level: str = "fp16",
-    quant_mode: str = "classical",
-    max_new_tokens: int = 20,
-) -> Tuple[str, float]:
-    t0 = time.time()
-
-    model_name = model_name if model_name in HF_MODELS else HF_MODELS[0]
-    quant_level = (quant_level or "fp16").lower()
-    quant_mode = (quant_mode or "classical").lower()
-
+def gpu_inference(prompt: str, cloud: str, model_name: str, quant_level: str, quant_mode: str) -> tuple[str, float]:
+    start_time = time.time()
+    
+    if model_name not in HF_MODELS:
+        model_name = HF_MODELS[0]
+    if quant_level not in ['fp16', 'int8', 'int4']:
+        quant_level = 'fp16'
+    if quant_mode not in ['classical', 'quantum_distillation', 'quantum_embedding']:
+        quant_mode = 'classical'
+    
     try:
-        tokenizer = get_tokenizer(model_name)
-        model = get_model(model_name, quant_level)
-
-        import torch
-
-        inputs = tokenizer(prompt, return_tensors="pt")
-        device = getattr(model, "device", None)
-        if device is not None:
-            inputs = {k: v.to(device) for k, v in inputs.items()}
-
-        gen_kwargs: Dict[str, Any] = {"max_new_tokens": int(max_new_tokens)}
-
-        if quant_mode == "quantum_distillation":
-            # Classical approximation: fixed sampling params.
-            gen_kwargs.update({"do_sample": True, "temperature": 0.7, "top_p": 0.9})
-
-        elif quant_mode == "quantum_embedding":
-            # Classical approximation: deterministic low-rank projection on embeddings.
+        model_path = f"{model_name.replace('/', '_')}.safetensors"
+        quantized_path = f"quantized_{model_name.replace('/', '_')}_{quant_level}.bin"
+        wrapper_input = f"{model_path}\n{quantized_path}\n{quant_level}"
+        subprocess.run(['./zeta_wrapper'], input=wrapper_input.encode(), check=True)
+        logger.info(f"Quantized with pruned Zeta to {quant_level}")
+        
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        
+        model = AutoModelForCausalLM.from_pretrained(quantized_path, device_map="auto")
+        
+        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        
+        if quant_mode == 'quantum_distillation':
             with torch.inference_mode():
-                input_ids = inputs.get("input_ids")
-                attn = inputs.get("attention_mask")
-                emb = model.get_input_embeddings()(input_ids)
-                h = emb.shape[-1]
-                rank = max(8, h // 2)
-                g = torch.Generator(device=emb.device)
-                g.manual_seed(0)
-                proj = torch.randn((h, rank), generator=g, device=emb.device, dtype=emb.dtype) / (h**0.5)
-                emb_low = emb @ proj
-                emb_proj = emb_low @ proj.transpose(0, 1)
-                emb_mix = 0.7 * emb + 0.3 * emb_proj
-                try:
-                    out = model.generate(inputs_embeds=emb_mix, attention_mask=attn, **gen_kwargs)
-                except Exception:
-                    out = model.generate(**inputs, **gen_kwargs)
-            text = tokenizer.decode(out[0], skip_special_tokens=True)
-            return (
-                f"Classical ({cloud}, {quant_level}, {quant_mode}) output: {text} (Embedding sim: rank={rank})",
-                time.time() - t0,
-            )
-
-        with torch.inference_mode():
-            out = model.generate(**inputs, **gen_kwargs)
-        text = tokenizer.decode(out[0], skip_special_tokens=True)
-        suffix = ""
-        if quant_mode == "quantum_distillation":
-            suffix = " (Classical distillation sim)"
-        return f"Classical ({cloud}, {quant_level}, {quant_mode}) output: {text}{suffix}", time.time() - t0
-
+                outputs = model.generate(**inputs, max_new_tokens=20, do_sample=True, temperature=0.7)
+            gen_text = tokenizer.decode(outputs[0])
+            modulated_text = gen_text + " (Classical distillation sim)"
+        
+        elif quant_mode == 'quantum_embedding':
+            embed_dim = model.config.hidden_size
+            projection_matrix = torch.randn(embed_dim, embed_dim // 2, device=model.device) * 0.1
+            inputs['input_ids'] = torch.matmul(inputs['input_ids'].float(), projection_matrix).long()
+            with torch.inference_mode():
+                outputs = model.generate(input_ids=inputs['input_ids'], max_new_tokens=20)
+            gen_text = tokenizer.decode(outputs[0])
+            modulated_text = gen_text + f" (Classical embedding sim: reduced to {embed_dim//2} dims)"
+        
+        else:
+            with torch.inference_mode():
+                outputs = model.generate(**inputs, max_new_tokens=20)
+            gen_text = tokenizer.decode(outputs[0])
+            modulated_text = gen_text
+        
     except Exception as e:
-        logger.exception("gpu_inference failed")
-        return f"Classical ({cloud}, {quant_level}, {quant_mode}) output: Error: {type(e).__name__}", time.time() - t0
+        logger.error(f"Classical inference failed: {str(e)}")
+        modulated_text = "Error during classical inference"
+    
+    end_time = time.time
+    return f"Classical ({cloud}, {quant_level}, {quant_mode}) output: {modulated_text}", end_time - start_time

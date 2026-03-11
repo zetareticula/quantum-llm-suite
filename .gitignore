@@ -1,28 +1,14 @@
-# Python
 __pycache__/
-*.py[cod]
+*.pyc
 *.pyo
-.venv/
+*.pyd
+.Python
+env/
 venv/
 *.egg-info/
 dist/
 build/
-.pytest_cache/
-.mypy_cache/
-
-# Env
-.env
-.env.*
-
-# Node / frontend
-node_modules/
-frontend/dist/
-frontend/.vite/
-
-# OS
+*.swp
 .DS_Store
-Thumbs.db
-
-# IDE
-.idea/
-.vscode/
+node_modules/
+npm-debug.log

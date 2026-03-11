@@ -1,86 +1,81 @@
 import React, { useState } from 'react';
-
-interface Message {
-  role: 'user' | 'assistant';
-  content: string;
-}
+import axios from 'axios';
+import { InferenceResponse } from '../types';
 
 const Chatbot: React.FC = () => {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [prompt, setPrompt] = useState('');
+  const [response, setResponse] = useState<InferenceResponse | null>(null);
+  const [apiKey, setApiKey] = useState('');
+  const [quantumProvider, setQuantumProvider] = useState('IBM');
+  const [cloudOffering, setCloudOffering] = useState('AWS');
+  const [model, setModel] = useState('Qwen/Qwen2.5-72B-Instruct');
+  const [quantLevel, setQuantLevel] = useState('fp16');
+  const [quantMode, setQuantMode] = useState('classical');
+  const [useReal, setUseReal] = useState(false);
 
-  const sendMessage = async () => {
-    if (!input.trim()) return;
-
-    const userMessage: Message = { role: 'user', content: input };
-    setMessages((prev) => [...prev, userMessage]);
-    setInput('');
-    setLoading(true);
-
+  const handleSubmit = async () => {
     try {
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: input }),
-      });
-      const data = await response.json();
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: data.response ?? 'No response.' },
-      ]);
-    } catch {
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: 'Error contacting the server.' },
-      ]);
-    } finally {
-      setLoading(false);
+      const res = await axios.post('http://localhost:8000/inference', {
+        prompt,
+        quantum_provider: quantumProvider,
+        cloud_offering: cloudOffering,
+        model,
+        quantization_level: quantLevel,
+        quantization_mode: quantMode,
+        use_quantum: true,
+        use_real_hardware: useReal
+      }, { headers: { 'api-key': apiKey } });
+      setResponse(res.data);
+    } catch (error) {
+      console.error(error);
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') sendMessage();
-  };
-
   return (
-    <div className="flex flex-col h-full max-w-2xl mx-auto p-4">
-      <div className="flex-1 overflow-y-auto space-y-3 mb-4">
-        {messages.map((msg, i) => (
-          <div
-            key={i}
-            className={`p-3 rounded-lg max-w-[80%] whitespace-pre-wrap ${
-              msg.role === 'user'
-                ? 'ml-auto bg-blue-600 text-white'
-                : 'bg-gray-700 text-gray-100'
-            }`}
-          >
-            {msg.content}
-          </div>
-        ))}
-        {loading && (
-          <div className="bg-gray-700 text-gray-400 p-3 rounded-lg max-w-[80%] animate-pulse">
-            Thinking…
-          </div>
-        )}
-      </div>
-      <div className="flex gap-2">
-        <input
-          className="flex-1 rounded-lg bg-gray-800 text-white px-4 py-2 outline-none focus:ring-2 focus:ring-blue-500"
-          placeholder="Ask something…"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          disabled={loading}
-        />
-        <button
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50"
-          onClick={sendMessage}
-          disabled={loading || !input.trim()}
-        >
-          Send
-        </button>
-      </div>
+    <div>
+      <input type="text" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="API Key" />
+      <select value={quantumProvider} onChange={e => setQuantumProvider(e.target.value)}>
+        <option>IBM</option>
+        <option>Rigetti</option>
+        <option>Google Quantum AI</option>
+        <option>IonQ</option>
+        <option>Local</option>
+        <option>AWS Braket</option>
+      </select>
+      <select value={cloudOffering} onChange={e => setCloudOffering(e.target.value)}>
+        <option>AWS</option>
+        <option>Google Cloud</option>
+        <option>Azure</option>
+        <option>Oracle Cloud</option>
+        <option>IBM Cloud</option>
+      </select>
+      <select value={model} onChange={e => setModel(e.target.value)}>
+        <option>Qwen/Qwen2.5-72B-Instruct</option>
+        <option>meta-llama/Meta-Llama-3.1-70B-Instruct</option>
+        <option>mistralai/Mistral-Large-Instruct-2407</option>
+        <option>THUDM/glm-4-9b-chat</option>
+        <option>DeepSeek-AI/DeepSeek-V2-Chat</option>
+      </select>
+      <select value={quantLevel} onChange={e => setQuantLevel(e.target.value)}>
+        <option>fp16</option>
+        <option>int8</option>
+        <option>int4</option>
+      </select>
+      <select value={quantMode} onChange={e => setQuantMode(e.target.value)}>
+        <option>classical</option>
+        <option>quantum_distillation</option>
+        <option>quantum_embedding</option>
+      </select>
+      <input type="checkbox" checked={useReal} onChange={e => setUseReal(e.target.checked)} /> Use Real Hardware (if token set)
+      <input type="text" value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="Enter prompt" />
+      <button onClick={handleSubmit}>Submit</button>
+      {response && (
+        <div>
+          <p>{response.classical_output} (Time: {response.time_classical}s)</p>
+          <p>{response.quantum_output} (Time: {response.time_quantum}s)</p>
+          <p>Benchmark: {response.benchmark}</p>
+        </div>
+      )}
     </div>
   );
 };
